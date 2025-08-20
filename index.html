@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-store" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard Comunidad</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 16px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { position: sticky; top: 0; background: #f7f7f7; }
+    input { padding: 8px; width: 320px; margin: 10px 0; }
+    .pagado   { background-color: #d4edda; } /* verde suave */
+    .pendiente{ background-color: #f8d7da; } /* rojo suave */
+
+    .badge { padding: 4px 8px; border-radius: 6px; font-size: 0.85em; color: #fff; }
+    .badge-verde { background-color: #28a745; }
+    .badge-rojo  { background-color: #dc3545; }
+    .badge-azul  { background-color: #007bff; }
+    .badge-gris  { background-color: #6c757d; }
+
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip { background:#eef1f5; padding:6px 10px; border-radius:16px; font-size:0.9em; }
+    .chip.ok   { background:#d4edda; }
+    .chip.warn { background:#f8d7da; }
+    .chip.info { background:#e2e3ff; }
+
+    .filters { display:flex; gap:8px; }
+    .filters-group { display:flex; align-items:center; gap:8px; margin-left: 8px; }
+    .filters-group label { font-size: 0.9em; color:#555; margin-right:4px; }
+    .btn { padding:6px 10px; border:1px solid #ccc; border-radius:8px; background:#fff; cursor:pointer; }
+    .btn.active { border-color:#111; box-shadow:0 0 0 2px #1111 inset; }
+
+    .muted { color:#666; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h2>Dashboard de depósitos/inscripciones</h2>
+
+  <div class="controls">
+    <div class="chips">
+      <span class="chip">Inscritas: <b id="countTotal">—</b></span>
+      <span class="chip ok">Pagadas: <b id="countPagados">—</b></span>
+      <span class="chip warn">Pendientes de pago: <b id="countPendientes">—</b></span>
+      <span class="chip info">Mostrando: <b id="countShown">—</b></span>
+      <span class="chip ok">Ingresadas: <b id="countIngresoSi">—</b></span>
+      <span class="chip warn">Por ingresar: <b id="countIngresoNo">—</b></span>
+    </div>
+
+    <!-- Filtros -->
+    <div class="filters">
+      <div class="filters-group" id="filterPago">
+        <label>Pago:</label>
+        <button class="btn active" data-filter="todos">Todos</button>
+        <button class="btn" data-filter="pagado">Pagados</button>
+        <button class="btn" data-filter="pendiente">Pendientes</button>
+      </div>
+
+      <div class="filters-group" id="filterIngreso">
+        <label>Ingreso:</label>
+        <button class="btn active" data-ingreso-filter="todos">Todos</button>
+        <button class="btn" data-ingreso-filter="ingreso-si">Ingresadas</button>
+        <button class="btn" data-ingreso-filter="ingreso-no">Por ingresar</button>
+      </div>
+    </div>
+  </div>
+
+  <input id="q" placeholder="Buscar..." />
+
+  <div class="muted" id="meta"></div>
+
+  <table id="t">
+    <thead>
+      <tr id="thead-row"></tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <script>
+    // === CONFIG ===
+    const GAS_ENDPOINT = 'https://script.google.com/macros/s/AKfycby0_BwglkZRwWVedDCzRCotbaIPUFVO8EWLZT6uZPmzA2gRnZnzT528tnLgYnfPQg96CA/exec'; // <- URL de Apps Script
+    let paymentFilter = 'todos';
+    let ingresoFilter = 'todos';
+    let DATA = { headers: [], rows: [], stats: {} };
+
+    // Normaliza "Si"/"Sí"
+    function isYes(v) {
+      if (v == null) return false;
+      const s = String(v).trim().toLowerCase();
+      return s === 'si' || s === 'sí';
+    }
+
+    // Manejo de clicks en ambos grupos de filtros
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.btn');
+      if (!btn) return;
+
+      // Filtro por pago
+      if (btn.dataset.filter !== undefined) {
+        const group = document.getElementById('filterPago');
+        group.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        paymentFilter = btn.dataset.filter; // 'todos' | 'pagado' | 'pendiente'
+        applyFilter();
+      }
+
+      // Filtro por ingreso
+      if (btn.dataset.ingresoFilter !== undefined) {
+        const group = document.getElementById('filterIngreso');
+        group.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        ingresoFilter = btn.dataset.ingresoFilter; // 'todos' | 'ingreso-si' | 'ingreso-no'
+        applyFilter();
+      }
+    });
+
+    document.getElementById('q').addEventListener('input', applyFilter);
+
+    // Fetch y render
+    async function loadData() {
+      const res = await fetch(GAS_ENDPOINT, { method: 'GET', cache: 'no-store' });
+      if (!res.ok) throw new Error('Error al leer el endpoint');
+      DATA = await res.json();
+      renderTable();
+      updateStaticCounts();
+      applyFilter();
+      renderMeta();
+    }
+
+    function renderMeta() {
+      const el = document.getElementById('meta');
+      const when = DATA.updated_at ? new Date(DATA.updated_at) : null;
+      el.textContent = when ? `Actualizado: ${when.toLocaleString()}` : '';
+    }
+
+    function renderTable() {
+      const theadRow = document.getElementById('thead-row');
+      const tbody = document.getElementById('tbody');
+      theadRow.innerHTML = '';
+      tbody.innerHTML = '';
+
+      const headers = DATA.headers || [];
+
+      // Render headers originales
+      headers.forEach(h => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        theadRow.appendChild(th);
+      });
+
+      // Agregamos dos columnas de estado
+      const thPago = document.createElement('th'); thPago.textContent = 'Pago';
+      const thIngreso = document.createElement('th'); thIngreso.textContent = 'Ingreso';
+      theadRow.appendChild(thPago);
+      theadRow.appendChild(thIngreso);
+
+      // Render rows
+      (DATA.rows || []).forEach(row => {
+        const pagoSi = isYes(row['Estado de Pago']);
+        const ingresoSi = isYes(row['Estado de Ingreso']);
+
+        const tr = document.createElement('tr');
+        // clases para filtros y estilos
+        tr.className = [
+          pagoSi ? 'pagado' : 'pendiente',
+          pagoSi ? 'pago-si' : 'pago-no',
+          ingresoSi ? 'ingreso-si' : 'ingreso-no'
+        ].join(' ');
+
+        // celdas de datos
+        headers.forEach(h => {
+          const td = document.createElement('td');
+          td.textContent = row[h] ?? '';
+          tr.appendChild(td);
+        });
+
+        // celda Pago
+        const tdPago = document.createElement('td');
+        tdPago.innerHTML = pagoSi
+          ? '<span class="badge badge-verde">✅ Pagado</span>'
+          : '<span class="badge badge-rojo">⛔ Pendiente</span>';
+        tr.appendChild(tdPago);
+
+        // celda Ingreso
+        const tdIngreso = document.createElement('td');
+        tdIngreso.innerHTML = ingresoSi
+          ? '<span class="badge badge-azul">✓ Ingresada</span>'
+          : '<span class="badge badge-gris">• Por ingresar</span>';
+        tr.appendChild(tdIngreso);
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    function updateStaticCounts() {
+      const total = document.querySelectorAll('#t tbody tr').length;
+      const pagados = document.querySelectorAll('#t tbody tr.pago-si').length;
+      const pendientes = total - pagados;
+      const ingresoSi = document.querySelectorAll('#t tbody tr.ingreso-si').length;
+      const ingresoNo = total - ingresoSi;
+
+      document.getElementById('countTotal').innerText = total;
+      document.getElementById('countPagados').innerText = pagados;
+      document.getElementById('countPendientes').innerText = pendientes;
+      document.getElementById('countIngresoSi').innerText = ingresoSi;
+      document.getElementById('countIngresoNo').innerText = ingresoNo;
+    }
+
+    function applyFilter() {
+      const q = document.getElementById('q').value.toLowerCase();
+      let shown = 0;
+      document.querySelectorAll('#t tbody tr').forEach(tr => {
+        const matchesQuery = tr.innerText.toLowerCase().includes(q);
+
+        // pago
+        const matchesPago =
+          paymentFilter === 'todos' ||
+          (paymentFilter === 'pagado'   && tr.classList.contains('pago-si')) ||
+          (paymentFilter === 'pendiente'&& tr.classList.contains('pago-no'));
+
+        // ingreso
+        const matchesIngreso =
+          ingresoFilter === 'todos' ||
+          (ingresoFilter === 'ingreso-si' && tr.classList.contains('ingreso-si')) ||
+          (ingresoFilter === 'ingreso-no' && tr.classList.contains('ingreso-no'));
+
+        const show = matchesQuery && matchesPago && matchesIngreso;
+        tr.style.display = show ? '' : 'none';
+        if (show) shown++;
+      });
+      document.getElementById('countShown').innerText = shown;
+    }
+
+    // Auto-reload cada 5 min (opcional)
+    setInterval(() => loadData().catch(console.error), 5 * 60 * 1000);
+
+    // Go!
+    loadData().catch(err => {
+      console.error(err);
+      alert('No se pudo cargar el dashboard. Revisa el endpoint y permisos del Web App.');
+    });
+  </script>
+</body>
+</html>
